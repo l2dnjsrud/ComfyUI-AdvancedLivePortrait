@@ -1014,8 +1014,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "AdvancedLivePortrait": "Advanced Live Portrait (PHM)",
-    "ExpressionEditor": "Expression Editor (PHM)",
-    "LoadExpData": "Load Exp Data (PHM)",
-    "SaveExpData": "Save Exp Data (PHM)"
+    "AdvancedLivePortrait": "Advanced Live Portrait (이원경)",
+    "ExpressionEditor": "Expression Editor (이원경)",
+    "LoadExpData": "Load Exp Data (이원경)",
+    "SaveExpData": "Save Exp Data (이원경)"
 }
