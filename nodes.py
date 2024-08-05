@@ -222,7 +222,8 @@ class LP_Engine:
             self.detect_model = YOLO(model_path)
 
         return self.detect_model
-
+    # preversion 
+    """
     def detect_face(self, image_rgb, crop_factor):
 
         #crop_factor = 1.7
@@ -267,6 +268,40 @@ class LP_Engine:
 
         print("Failed to detect face!!")
         return [0, 0, w, h]
+    """
+    def detect_face(self, image_rgb, crop_factor):
+        detect_model = self.get_detect_model()
+        pred = detect_model(image_rgb, conf=0.7, device="")
+        bboxes = pred[0].boxes.xyxy.cpu().numpy()
+
+        w, h = get_rgb_size(image_rgb)
+        face_regions = []
+
+        for x1, y1, x2, y2 in bboxes:
+            bbox_w = x2 - x1
+            bbox_h = y2 - y1
+
+            crop_w = bbox_w * crop_factor
+            crop_h = bbox_h * crop_factor
+
+            crop_w = max(crop_h, crop_w)
+            crop_h = crop_w
+
+            kernel_x = x1 + bbox_w / 2
+            kernel_y = y1 + bbox_h / 2
+
+            new_x1 = max(0, kernel_x - crop_w / 2)
+            new_x2 = min(w, kernel_x + crop_w / 2)
+            new_y1 = max(0, kernel_y - crop_h / 2)
+            new_y2 = min(h, kernel_y + crop_h / 2)
+
+            face_regions.append([int(new_x1), int(new_y1), int(new_x2), int(new_y2)])
+
+        if not face_regions:
+            print("Failed to detect face!!")
+            face_regions.append([0, 0, w, h])
+
+        return face_regions
 
     # def crop_face(self, rgb_img, crop_factor):
     #     square = self.detect_face(rgb_img, crop_factor)
@@ -350,38 +385,32 @@ class LP_Engine:
         face_img = rgb_crop(img_rgb, face_region)
         if is_changed: face_img = self.expand_img(face_img, crop_region)
         return face_img
-
+#Newversion
     def prepare_source(self, source_image, crop_factor, is_video = False):
         print("Prepare source...")
         engine = self.get_pipeline()
         source_image_np = (source_image * 255).byte().numpy()
         img_rgb = source_image_np[0]
-        crop_region = self.detect_face(img_rgb, crop_factor)
-        face_region, is_changed = self.calc_face_region(crop_region, get_rgb_size(img_rgb))
-
-        s_x = (face_region[2] - face_region[0]) / 512.
-        s_y = (face_region[3] - face_region[1]) / 512.
-        crop_trans_m = create_transform_matrix(crop_region[0], crop_region[1], s_x, s_y)
-        mask_ori = cv2.warpAffine(self.GetMaskImg(), crop_trans_m, get_rgb_size(img_rgb), cv2.INTER_LINEAR)
-        mask_ori = mask_ori.astype(np.float32) / 255.
-
-        if is_changed:
-            s = (crop_region[2] - crop_region[0]) / 512.
-            crop_trans_m = create_transform_matrix(crop_region[0], crop_region[1], s, s)
+        face_regions = self.detect_face(img_rgb, crop_factor)
 
         psi_list = []
-        for img_rgb in source_image_np:
-            face_img = rgb_crop(img_rgb, face_region)
-            if is_changed: face_img = self.expand_img(face_img, crop_region)
+        for region in face_regions:
+            face_img = rgb_crop(img_rgb, region)
+            s_x = (region[2] - region[0]) / 512.
+            s_y = (region[3] - region[1]) / 512.
+            crop_trans_m = create_transform_matrix(region[0], region[1], s_x, s_y)
+            mask_ori = cv2.warpAffine(self.GetMaskImg(), crop_trans_m, get_rgb_size(img_rgb), cv2.INTER_LINEAR)
+            mask_ori = mask_ori.astype(np.float32) / 255.
+
             i_s = self.prepare_src_image(face_img)
             x_s_info = engine.get_kp_info(i_s)
             f_s_user = engine.extract_feature_3d(i_s)
             x_s_user = engine.transform_keypoint(x_s_info)
             psi = PreparedSrcImg(img_rgb, crop_trans_m, x_s_info, f_s_user, x_s_user, mask_ori)
-            if is_video == False:
-                return psi
             psi_list.append(psi)
 
+        if not is_video and len(psi_list) == 1:
+            return psi_list[0]
         return psi_list
 
     def prepare_driving_video(self, face_images):
@@ -659,6 +688,7 @@ class AdvancedLivePortrait:
                 "crop_factor": ("FLOAT", {"default": 2, "min": 1.5, "max": 3, "step": 0.1}),
                 "turn_on": ("BOOLEAN", {"default": True}),
                 "command": ("STRING", {"multiline": True, "default": ""}),
+                 "face_index": ("INT", {"default": -1, "min": -1, "max": 10, "step": 1}),  # -1은 모든 얼굴을 의미
             },
             "optional": {
                 "src_images": ("IMAGE",),
@@ -711,10 +741,34 @@ class AdvancedLivePortrait:
         return cmd_list, total_length
 
 
-    def run(self, retargeting_eyes, retargeting_mouth, turn_on, command, crop_factor,
+    def run(self, retargeting_eyes, retargeting_mouth, turn_on, command, crop_factor, face_index,
             src_images=None, driving_images=None, motion_link=None):
         if turn_on == False: return (None,None)
         src_length = 1
+        
+        out_list = []
+        for i in range(total_length):
+            if isinstance(self.psi_list, list):
+                if 0 <= face_index < len(self.psi_list):
+                    psi_to_process = [self.psi_list[face_index]]
+                elif face_index == -1:
+                    psi_to_process = self.psi_list
+                else:
+                    print(f"Invalid face index. Processing all faces.")
+                    psi_to_process = self.psi_list
+            else:
+                psi_to_process = [self.psi_list]
+
+            frame_output = []
+            for psi in psi_to_process:
+                # ... (각 얼굴에 대한 처리 로직)
+                frame_output.append(out)
+
+            # 모든 처리된 얼굴을 하나의 이미지로 합성
+            combined_output = np.maximum.reduce(frame_output)
+            out_list.append(combined_output)
+
+            self.pbar.update_absolute(i+1, total_length, ("PNG", Image.fromarray(combined_output), None))
 
         if src_images == None:
             if motion_link != None:
@@ -828,6 +882,7 @@ class ExpressionEditor:
         #display = "slider"
         return {
             "required": {
+                "face_index": ("INT", {"default": 0, "min": 0, "max": 10, "step": 1, "display": display}),
 
                 "rotate_pitch": ("FLOAT", {"default": 0, "min": -20, "max": 20, "step": 0.5, "display": display}),
                 "rotate_yaw": ("FLOAT", {"default": 0, "min": -20, "max": 20, "step": 0.5, "display": display}),
@@ -866,7 +921,7 @@ class ExpressionEditor:
     # OUTPUT_IS_LIST = (False,)
 
     def run(self, rotate_pitch, rotate_yaw, rotate_roll, blink, eyebrow, wink, pupil_x, pupil_y, aaa, eee, woo, smile,
-            src_ratio, sample_ratio, crop_factor, src_image=None, sample_image=None, motion_link=None, add_exp=None):
+            src_ratio, sample_ratio, crop_factor, face_index, src_image=None, sample_image=None, motion_link=None, add_exp=None):
         rotate_yaw = -rotate_yaw
 
         new_editor_link = None
@@ -882,6 +937,15 @@ class ExpressionEditor:
             new_editor_link.append(self.psi)
         else:
             return (None,None)
+        
+        if isinstance(self.psi, list):
+            if 0 <= face_index < len(self.psi):
+                psi = self.psi[face_index]
+            else:
+                print(f"Invalid face index. Using face 0 out of {len(self.psi)} detected faces.")
+                psi = self.psi[0]
+        else:
+            psi = self.psi
 
         pipeline = g_engine.get_pipeline()
 
